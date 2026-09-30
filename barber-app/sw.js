@@ -1,23 +1,30 @@
 /* ============================================================
-   sw.js — Service Worker: офлайн-режим, кэш barber-v2
+   sw.js — Service Worker: оболочка и встроенные фото офлайн
    Меняйте CACHE_VERSION при обновлении файлов приложения.
    ============================================================ */
 'use strict';
 
-const CACHE_VERSION = 'barber-v1';
+const CACHE_VERSION = 'barber-v2';
 const STATIC_CACHE  = CACHE_VERSION + '-static';
 const IMAGE_CACHE   = CACHE_VERSION + '-img';
 
 /* ---------- всё, что нужно для работы офлайн ---------- */
 const PRECACHE = [
-  './',
   './index.html',
   './manifest.json',
   './css/styles.css',
   './js/storage.js',
+  './js/media.js',
+  './js/pwa.js',
   './js/auth.js',
   './js/booking.js',
   './js/app.js',
+  './images/barber-artem.jpg',
+  './images/barber-danila.jpg',
+  './images/barber-mark.jpg',
+  './images/salon-main.jpg',
+  './images/salon-chair.jpg',
+  './images/salon-tools.jpg',
   './icons/calendar.svg',
   './icons/list.svg',
   './icons/home.svg',
@@ -53,88 +60,91 @@ const PRECACHE = [
   './icons/favicon-32.png'
 ];
 
-/* ---------- установка: кладём ассеты в кэш ---------- */
+/* Не активируем неполный офлайн-кэш, если один из файлов не загрузился. */
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(STATIC_CACHE);
-    /* addAll падает целиком при одной ошибке — кладём поштучно */
-    await Promise.all(PRECACHE.map((url) =>
-      cache.add(new Request(url, { cache: 'reload' })).catch(() => null)));
-    self.skipWaiting();
+    await cache.addAll(PRECACHE.map((url) => new Request(new URL(url, self.location.href), { cache: 'reload' })));
+    await self.skipWaiting();
   })());
 });
 
-/* ---------- активация: чистим старые версии ---------- */
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys
-      .filter((k) => !k.startsWith(CACHE_VERSION))
-      .map((k) => caches.delete(k)));
-    if (self.registration.navigationPreload) {
-      try { await self.registration.navigationPreload.disable(); } catch (e) { /* noop */ }
-    }
+      .filter((key) => /^barber-v\d+-(static|img)$/.test(key) && key !== STATIC_CACHE && key !== IMAGE_CACHE)
+      .map((key) => caches.delete(key)));
     await self.clients.claim();
   })());
 });
 
-/* ---------- стратегии ---------- */
 const isImage = (url) => /\.(png|jpe?g|webp|gif|svg|avif|ico)$/i.test(url.pathname);
-const isRemote = (url) => url.origin !== self.location.origin;
 
-/* картинки: сначала кэш, иначе сеть с докладкой в кэш */
-async function cacheFirst(request, cacheName) {
-  const cache = await caches.open(cacheName);
-  const hit = await cache.match(request, { ignoreSearch: true });
+/* Ошибка/переполнение кэша не должны мешать загрузке файла из сети. */
+async function save(cache, request, response) {
+  try { await cache.put(request, response.clone()); }
+  catch (err) { /* Ответ всё равно отдаём странице. */ }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(IMAGE_CACHE);
+  const local = new URL(request.url).origin === self.location.origin;
+  let hit = await cache.match(request);
+  if (!hit && local) {
+    /* Встроенные фото и иконки лежат в precache, а не runtime-кэше. */
+    const precache = await caches.open(STATIC_CACHE);
+    hit = await precache.match(request, { ignoreSearch: true });
+  }
   if (hit) return hit;
   try {
-    const res = await fetch(request);
-    if (res && (res.ok || res.type === 'opaque')) cache.put(request, res.clone());
-    return res;
+    const response = await fetch(request);
+    if (response.ok || response.type === 'opaque') await save(cache, request, response);
+    return response;
   } catch (err) {
-    return hit || Response.error();
+    return Response.error();
   }
 }
 
-/* код и стили: сначала сеть (свежая версия), при офлайне — кэш */
-async function networkFirst(request, cacheName) {
-  const cache = await caches.open(cacheName);
+async function networkFirst(request) {
+  const cache = await caches.open(STATIC_CACHE);
+  const controller = new AbortController();
+  /* При слабой мобильной сети не заставляем ждать оболочку бесконечно. */
+  const timeout = request.mode === 'navigate' ? setTimeout(() => controller.abort(), 7000) : null;
+  let response;
   try {
-    const res = await fetch(request);
-    if (res && res.ok) cache.put(request, res.clone());
-    return res;
-  } catch (err) {
-    const hit = await cache.match(request, { ignoreSearch: true });
-    if (hit) return hit;
-    if (request.mode === 'navigate') {
-      const shell = await cache.match('./index.html');
-      if (shell) return shell;
+    response = await fetch(request, { signal: controller.signal });
+    if (response.ok) {
+      await save(cache, request, response);
+      return response;
     }
-    return Response.error();
+  } catch (err) { /* Офлайн или таймаут — пробуем кэш. */ }
+  finally { if (timeout !== null) clearTimeout(timeout); }
+
+  const hit = await cache.match(request, { ignoreSearch: true });
+  if (hit) return hit;
+  if (request.mode === 'navigate') {
+    const shell = await cache.match(new URL('./index.html', self.location.href).href);
+    if (shell) return shell;
   }
+  return response || Response.error();
 }
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
-
   const url = new URL(request.url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
-  /* навигация — отдаём оболочку приложения */
   if (request.mode === 'navigate') {
-    event.respondWith(networkFirst(request, STATIC_CACHE));
-    return;
+    event.respondWith(networkFirst(request));
+  } else if (request.destination === 'image' || isImage(url)) {
+    event.respondWith(cacheFirst(request));
+  } else if (url.origin === self.location.origin) {
+    event.respondWith(networkFirst(request));
   }
-  /* фото салона и аватары (Unsplash и любые внешние) */
-  if (isRemote(url) || isImage(url)) {
-    event.respondWith(cacheFirst(request, isImage(url) ? IMAGE_CACHE : STATIC_CACHE));
-    return;
-  }
-  event.respondWith(networkFirst(request, STATIC_CACHE));
 });
 
-/* ---------- сообщения от страницы (обновление / версия) ---------- */
 self.addEventListener('message', (event) => {
   const data = event.data || {};
   if (data.type === 'SKIP_WAITING') self.skipWaiting();

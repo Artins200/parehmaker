@@ -29,6 +29,7 @@
   const toastRoot = document.getElementById('toast-root');
   const titleEl   = document.getElementById('appbar-title');
   const themeBtn  = document.getElementById('theme-btn');
+  const installBtn = document.getElementById('install-btn');
 
   const SCREENS = ['salon', 'book', 'bookings', 'account'];
   const TAB_LABELS = { salon: 'Салон', book: 'Записаться', bookings: 'Мои записи', account: 'Аккаунт' };
@@ -48,7 +49,6 @@
   let lastScreen = null;         // чтобы анимировать только смену экрана
   let sheet = null;              // текущая модалка
   let confirmCb = null;          // подтверждение действия
-  let deferredPrompt = null;     // установка PWA (Android/Chrome)
 
   const CAL = { book: 'bookMonth', cab: 'cabMonth', adm: 'admMonth' };
   const CAL_DATE = { cab: 'cabDate', adm: 'admDate' };
@@ -77,10 +77,10 @@
 
   const pad2 = U.pad;
   const avatarHTML = (person, cls) => {
-    const photo = person && person.photo;
+    const photo = Media.photoURL(person && person.photo);
     return `<span class="avatar${cls ? ' ' + cls : ''}">` +
       `<span class="avatar__initials">${U.esc(U.initials(person && person.name))}</span>` +
-      (photo ? `<img src="${U.esc(photo)}" alt="">` : '') +
+      (photo ? `<img src="${U.esc(photo)}" alt="" width="400" height="400" decoding="async">` : '') +
       '</span>';
   };
 
@@ -95,16 +95,6 @@
     if (!barber || !barber.ratingsCount) return `<span class="rating-xs">Нет оценок</span>`;
     return `<span class="rating-xs${cls ? ' ' + cls : ''}">${ic('star-filled', 'ic-12')}${U.rating(barber.rating)}
             <span class="muted">(${barber.ratingsCount})</span></span>`;
-  }
-
-  /* аватар/аватарки ломаются — показываем инициалы */
-  function afterRender() {
-    view.querySelectorAll('.avatar img').forEach((img) => {
-      img.addEventListener('error', () => img.remove(), { once: true });
-    });
-    view.querySelectorAll('.gallery__item img').forEach((img) => {
-      img.addEventListener('error', () => img.remove(), { once: true });
-    });
   }
 
   /* ============================================================
@@ -200,17 +190,13 @@
   /* ============================================================
      ЭКРАН «САЛОН»
      ============================================================ */
-  const GALLERY = [
-    { url: 'https://images.unsplash.com/photo-1585747860715-2ba37e788b70?auto=format&fit=crop&w=900&q=70', cap: 'Основной зал' },
-    { url: 'https://images.unsplash.com/photo-1622286342621-4bd786c2447c?auto=format&fit=crop&w=900&q=70', cap: 'Кресло мастера' },
-    { url: 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=900&q=70', cap: 'Инструменты барбера' }
-  ];
+  const GALLERY = Media.GALLERY;
 
   function screenSalon() {
     const barbers = Auth.listBarbers();
 
-    const gallery = `<div class="hscroll hscroll--gallery">${GALLERY.map((g) => `
-      <figure class="gallery__item"><img src="${g.url}" alt="${U.esc(g.cap)}" loading="lazy">
+    const gallery = `<div class="hscroll hscroll--gallery">${GALLERY.map((g, index) => `
+      <figure class="gallery__item"><img src="${g.url}" alt="${U.esc(g.cap)}" width="900" height="600" loading="${index === 0 ? 'eager' : 'lazy'}" decoding="async">
         <figcaption class="gallery__cap">${U.esc(g.cap)}</figcaption></figure>`).join('')}</div>`;
 
     const staff = barbers.length ? `<div class="card-list">${barbers.map((b) => `
@@ -900,18 +886,91 @@
   /* ============================================================
      ОБЩИЕ БЛОКИ: тема, установка, выход
      ============================================================ */
+  function installSummary() {
+    const env = PWA.environment();
+    if (!env.secure) return 'Для установки откройте сайт по HTTPS, а не по HTTP или из файла.';
+    if (env.embedded) return 'Откройте сайт в отдельной вкладке браузера, чтобы установить приложение.';
+    if (env.inAppBrowser) return 'Откройте сайт в Safari или Chrome, а не внутри мессенджера.';
+    if (env.ios) return 'iPhone и iPad: Safari → «Поделиться» → На экран «Домой».';
+    if (PWA.canPrompt()) return 'Запись к барберу в один тап — прямо с домашнего экрана.';
+    return 'Нажмите кнопку ниже: установите приложение или посмотрите инструкцию для вашего браузера.';
+  }
+
+  function installPanelHTML() {
+    if (PWA.isInstalled()) return '';
+    return `
+      <div class="note note--install">
+        ${ic('download', 'ic-22 ic-blue')}
+        <span><b>Приложение на домашнем экране</b><br>${U.esc(installSummary())}</span>
+      </div>
+      <button class="btn btn-primary btn-block" data-act="install" ${PWA.isPrompting() ? 'disabled' : ''}>
+        ${ic('download', 'ic-20')}${PWA.isPrompting() ? 'Ожидание браузера…' : 'Установить приложение'}
+      </button>`;
+  }
+
+  function installHelpHTML() {
+    const env = PWA.environment();
+    if (!env.secure) {
+      return `<div class="note">${ic('info', 'ic-22 ic-blue')}
+        <span><b>Нужно защищённое соединение HTTPS.</b><br>
+          По адресу HTTP на телефоне установка и офлайн-режим недоступны.
+          Откройте HTTPS-версию сайта в Safari или Chrome. Если её нет, владельцу сайта нужно включить HTTPS.</span></div>`;
+    }
+    if (env.embedded) {
+      return `<p>Во встроенном просмотре установка недоступна. Откройте приложение в отдельной вкладке ${env.ios ? 'Safari' : 'браузера'}.</p>
+        <a class="btn btn-primary btn-block" href="${U.esc(location.href)}" target="_blank" rel="noopener noreferrer">
+          ${ic('download', 'ic-20')}Открыть в отдельной вкладке</a>
+        <p class="muted-2">Затем снова нажмите «Установить приложение». На iPhone используйте меню «Поделиться» в Safari.</p>`;
+    }
+    if (env.inAppBrowser) {
+      return `<p>Браузер внутри мессенджера или соцсети может не поддерживать установку.</p>
+        <ol class="install-steps">
+          <li>Откройте меню этого браузера и выберите «Открыть в ${env.ios ? 'Safari' : 'браузере'}».
+            Если такого пункта нет, скопируйте адрес сайта и вставьте его в ${env.ios ? 'Safari' : 'Chrome'}.</li>
+          <li>Откройте сайт и снова нажмите «Установить приложение».</li>
+        </ol>`;
+    }
+    if (env.ios) {
+      return `${env.safari ? '<p>На iPhone и iPad приложение устанавливается через меню Safari, а не автоматическое окно установки.</p>'
+        : '<p>Откройте этот сайт в <b>Safari</b>: там можно добавить приложение на домашний экран.</p>'}
+        <ol class="install-steps">
+          <li>В Safari нажмите «Поделиться» — значок квадрата со стрелкой вверх (в панели или меню браузера).</li>
+          <li>Прокрутите список действий и выберите <b>На экран «Домой»</b>.</li>
+          <li>Если есть переключатель «Открывать как веб-приложение», включите его. Нажмите «Добавить».</li>
+        </ol>
+        <p class="muted-2">Иконка «Джентльмен» появится на домашнем экране.</p>`;
+    }
+    return `${PWA.canPrompt() ? `<button class="btn btn-primary btn-block" data-act="install">${ic('download', 'ic-20')}Установить приложение</button>` : ''}
+      <p>${env.android ? 'В Chrome или Edge на Android:' : 'В браузере с поддержкой установки, например Chrome или Edge:'}</p>
+      <ol class="install-steps">
+        <li>Откройте меню браузера${env.android ? ' (три точки)' : ' или нажмите значок установки в адресной строке'}.</li>
+        <li>Выберите «Установить приложение» или «Добавить на главный экран».</li>
+        <li>Подтвердите установку. Иконка появится ${env.android ? 'на домашнем экране или в списке приложений' : 'в списке приложений'}.</li>
+      </ol>
+      <p class="muted-2">Если пункта установки нет, обновите браузер и откройте сайт по HTTPS в обычной, не приватной вкладке.
+        Автоматическое предложение установки может появиться не сразу; меню браузера доступно отдельно.</p>`;
+  }
+
+  function openInstallHelp() {
+    openSheet({ kind: 'install', title: 'Установить приложение', body: installHelpHTML });
+  }
+
+  /* Обновляем только установку и статус, не сбрасывая фокус и ввод в формах. */
+  function syncInstallUI() {
+    installBtn.hidden = PWA.isInstalled();
+    installBtn.disabled = PWA.isPrompting();
+    view.querySelectorAll('[data-install-panel]').forEach((panel) => {
+      panel.hidden = PWA.isInstalled();
+      panel.innerHTML = installPanelHTML();
+    });
+    view.querySelectorAll('[data-offline-status]').forEach((el) => {
+      el.textContent = PWA.statusText();
+    });
+    if (sheet && sheet.kind === 'install') renderSheet();
+  }
+
   function commonBlocks(user) {
     const theme = DB.getTheme();
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-
-    const install = isStandalone ? '' : `
-    <div class="note note--install">
-      ${ic('download', 'ic-22 ic-blue')}
-      <span><b>Установите приложение на телефон.</b><br>
-        iPhone: «Поделиться» ${ic('chevron-right', 'ic-12')} «На экран “Домой”».<br>
-        Android: меню браузера ${ic('chevron-right', 'ic-12')} «Установить приложение».</span>
-    </div>
-    ${deferredPrompt ? `<button class="btn btn-primary btn-block" data-act="install">${ic('download', 'ic-20')}Установить приложение</button>` : ''}`;
 
     return `
     <section class="section">
@@ -921,9 +980,9 @@
         <span>Тема оформления</span>
         <span class="switch-btn__state">${theme === 'dark' ? 'Тёмная' : 'Светлая'}</span>
       </button>
-      ${install}
+      <div class="stage" data-install-panel ${PWA.isInstalled() ? 'hidden' : ''}>${installPanelHTML()}</div>
       ${user ? `<button class="btn btn-danger btn-block" data-act="logout">${ic('logout', 'ic-20')}Выйти из аккаунта</button>` : ''}
-      <div class="muted center" style="padding-top:6px">Джентльмен · версия 1.0 · офлайн-режим включён</div>
+      <div class="muted center" style="padding-top:6px">Джентльмен · версия 1.1<br><span data-offline-status>${U.esc(PWA.statusText())}</span></div>
     </section>`;
   }
 
@@ -989,7 +1048,7 @@
       : S.screen === 'book' ? screenBook()
       : S.screen === 'bookings' ? screenBookings()
       : screenAccount();
-    afterRender();
+    syncInstallUI();
   }
 
   /* ============================================================
@@ -1012,8 +1071,6 @@
           <div class="sheet__body">${body}</div>
         </div>
       </div>`;
-    modalRoot.querySelectorAll('.avatar img').forEach((img) =>
-      img.addEventListener('error', () => img.remove(), { once: true }));
   }
 
   const confirmSheet = (title, text, confirmText, onConfirm) => {
@@ -1278,11 +1335,13 @@
       setScreen('book');
     },
     install: async () => {
-      if (!deferredPrompt) return toast('Установка недоступна в этом браузере', 'info');
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      deferredPrompt = null;
-      render();
+      if (PWA.isInstalled() || PWA.isPrompting()) return;
+      if (!PWA.canPrompt()) return openInstallHelp();
+      if (sheet && sheet.kind === 'install') closeSheet();
+      const outcome = await PWA.install();
+      if (outcome === 'accepted') toast('Установка запущена', 'download');
+      else if (outcome === 'dismissed') toast('Установка отменена. Можно попробовать позже', 'info');
+      else openInstallHelp();
     },
     'reset-demo': () => confirmSheet('Сбросить все данные?',
       'Будут удалены все клиенты, сотрудники и записи. Приложение вернётся к демо-состоянию.',
@@ -1399,12 +1458,14 @@
   /* ---------- глобальные события ---------- */
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet) closeSheet(); });
 
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    if (S.screen === 'account') render();
+  window.addEventListener('pwa-statechange', syncInstallUI);
+  window.addEventListener('pwa-updateavailable', () => {
+    toast('Доступна новая версия — перезапустите приложение', 'download');
   });
-  window.addEventListener('appinstalled', () => { deferredPrompt = null; toast('Приложение установлено', 'download'); });
+  window.addEventListener('appinstalled', () => {
+    if (sheet && sheet.kind === 'install') closeSheet();
+    toast('Приложение установлено', 'download');
+  });
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden) maybeShowRatingPopup(); });
 
@@ -1420,6 +1481,7 @@
     document.querySelectorAll('[data-ic]').forEach((el) => el.classList.add('i-' + el.dataset.ic));
 
     Auth.seedDemo();
+    Media.migrateLegacyPhotos();
     DB.getGuestId();
 
     /* если мы вернулись барбером/админом — открываем «Аккаунт» */
@@ -1438,25 +1500,7 @@
 
     render();
     setTimeout(maybeShowRatingPopup, 400);
-    registerServiceWorker();
-  }
-
-  /* ---------- Service Worker (офлайн-режим) ---------- */
-  function registerServiceWorker() {
-    if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').then((reg) => {
-        reg.addEventListener('updatefound', () => {
-          const sw = reg.installing;
-          if (!sw) return;
-          sw.addEventListener('statechange', () => {
-            if (sw.state === 'installed' && navigator.serviceWorker.controller) {
-              toast('Доступна новая версия — перезапустите приложение', 'download');
-            }
-          });
-        });
-      }).catch((err) => console.warn('[sw] регистрация не удалась', err));
-    });
+    PWA.registerServiceWorker();
   }
 
   boot();
