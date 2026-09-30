@@ -295,15 +295,15 @@ const Auth = (() => {
       const demo = [
         { name: 'Артём Соколов', login: 'artem', email: 'artem@barbershop.ru', phone: '+7 (999) 123-45-11',
           specialty: 'Топ-барбер — фейды и борода', password: 'barber123', services: [1, 2, 3, 5],
-          photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&h=400&q=70',
+          photo: Media.BARBER_PHOTOS.artem,
           availabilityByDate: genAvailability({ days: 24, start: 10, end: 20, offDays: [0] }) },
         { name: 'Данила Крылов', login: 'danila', email: 'danila@barbershop.ru', phone: '+7 (999) 123-45-12',
           specialty: 'Классические стрижки и усы', password: 'barber123', services: [1, 2, 4, 6],
-          photo: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?auto=format&fit=crop&w=400&h=400&q=70',
+          photo: Media.BARBER_PHOTOS.danila,
           availabilityByDate: genAvailability({ days: 18, start: 9, end: 18, offDays: [0, 6] }) },
         { name: 'Марк Ефимов', login: 'mark', email: 'mark@barbershop.ru', phone: '+7 (999) 123-45-13',
           specialty: 'Барбер-стилист, оформление бороды', password: 'barber123', services: [1, 3, 5],
-          photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&h=400&q=70',
+          photo: Media.BARBER_PHOTOS.mark,
           availabilityByDate: genAvailability({ days: 27, start: 12, end: 21, offDays: [1] }) }
       ];
       demo.forEach((d) => list.push(blankBarber(d)));
