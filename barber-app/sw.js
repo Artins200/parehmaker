@@ -4,12 +4,13 @@
    ============================================================ */
 'use strict';
 
-const CACHE_VERSION = 'barber-v2';
+const CACHE_VERSION = 'barber-v3';
 const STATIC_CACHE  = CACHE_VERSION + '-static';
 const IMAGE_CACHE   = CACHE_VERSION + '-img';
 
 /* ---------- всё, что нужно для работы офлайн ---------- */
 const PRECACHE = [
+  './',              // адрес, по которому оболочку отдают все хостинги без редиректа
   './index.html',
   './manifest.json',
   './css/styles.css',
@@ -60,11 +61,33 @@ const PRECACHE = [
   './icons/favicon-32.png'
 ];
 
-/* Не активируем неполный офлайн-кэш, если один из файлов не загрузился. */
+/* Браузер не принимает от Service Worker ответ, полученный через редирект, когда открывает
+   страницу: появляется «Не удалось получить доступ к сайту» (net::ERR_FAILED), хотя сайт
+   работает. Cloudflare Workers и Pages (и часть других хостингов) отвечают на /index.html
+   редиректом на /, а именно с такого адреса запускается установленное приложение.
+   Поэтому всё, что приходит через редирект, сохраняем копией без признака redirected. */
+async function cleanResponse(response) {
+  if (!response.redirected) return response;
+  const body = response.body ? await response.blob() : null;
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers
+  });
+}
+
+/* Не активируем неполный офлайн-кэш: если один из файлов не загрузился, установка
+   завершается ошибкой. Файлы берём мимо HTTP-кэша браузера. */
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(STATIC_CACHE);
-    await cache.addAll(PRECACHE.map((url) => new Request(new URL(url, self.location.href), { cache: 'reload' })));
+    const files = await Promise.all(PRECACHE.map(async (path) => {
+      const request = new Request(new URL(path, self.location.href), { cache: 'reload' });
+      const response = await fetch(request);
+      if (!response.ok) throw new Error('Не удалось загрузить ' + path + ' (HTTP ' + response.status + ')');
+      return [request, await cleanResponse(response)];
+    }));
+    await Promise.all(files.map(([request, response]) => cache.put(request, response)));
     await self.skipWaiting();
   })());
 });
@@ -83,7 +106,7 @@ const isImage = (url) => /\.(png|jpe?g|webp|gif|svg|avif|ico)$/i.test(url.pathna
 
 /* Ошибка/переполнение кэша не должны мешать загрузке файла из сети. */
 async function save(cache, request, response) {
-  try { await cache.put(request, response.clone()); }
+  try { await cache.put(request, await cleanResponse(response.clone())); }
   catch (err) { /* Ответ всё равно отдаём странице. */ }
 }
 
@@ -114,6 +137,9 @@ async function networkFirst(request) {
   let response;
   try {
     response = await fetch(request, { signal: controller.signal });
+    /* Навигация идёт с redirect: 'manual'. Если сервер ответил редиректом (/index.html → /),
+       отдаём его браузеру: он сам перейдёт по адресу, а кэш тут не нужен. */
+    if (response.type === 'opaqueredirect') return response;
     if (response.ok) {
       await save(cache, request, response);
       return response;
@@ -124,7 +150,8 @@ async function networkFirst(request) {
   const hit = await cache.match(request, { ignoreSearch: true });
   if (hit) return hit;
   if (request.mode === 'navigate') {
-    const shell = await cache.match(new URL('./index.html', self.location.href).href);
+    const shell = await cache.match(new URL('./', self.location.href).href) ||
+                  await cache.match(new URL('./index.html', self.location.href).href);
     if (shell) return shell;
   }
   return response || Response.error();
