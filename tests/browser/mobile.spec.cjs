@@ -5,6 +5,20 @@ async function waitForWorker(page) {
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
 }
 
+/* Адреса, с которых Android/iOS запускают установленное приложение: start_url и ярлыки
+   манифеста. Плюс старые адреса с index.html: они остаются в уже установленных копиях. */
+async function launchURLs(page, prefix) {
+  const fromManifest = await page.evaluate(async () => {
+    const href = document.querySelector('link[rel="manifest"]').href;
+    const manifest = await (await fetch(href)).json();
+    return [manifest.start_url, ...manifest.shortcuts.map((item) => item.url)]
+      .map((url) => new URL(url, href).href);
+  });
+  const legacy = ['index.html?src=pwa', 'index.html?screen=bookings']
+    .map((url) => new URL(prefix + url, page.url()).href);
+  return [...fromManifest, ...legacy];
+}
+
 async function expectPhotos(locator, count) {
   await expect(locator).toHaveCount(count);
   for (const img of await locator.all()) {
@@ -44,7 +58,7 @@ test('mobile photos load without an external image service', async ({ page }) =>
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-for (const prefix of ['/', '/barber-app/']) {
+for (const prefix of ['/', '/barber-app/', '/cloudflare/']) {
   test(`unopened gallery, avatars and PWA shortcuts work offline at ${prefix}`, async ({ page, context }) => {
     await page.goto(prefix);
     await waitForWorker(page);
@@ -60,6 +74,43 @@ for (const prefix of ['/', '/barber-app/']) {
     await expect(page.locator('[data-offline-status]')).toHaveText('Офлайн-режим готов');
   });
 }
+
+/* Регрессия «Не удалось получить доступ к сайту»: Cloudflare Workers/Pages отвечают на
+   /index.html редиректом на /. Service Worker закэшировал этот редирект, а браузер не
+   принимает такой ответ на запуск приложения, хотя сайт при этом был в сети. */
+for (const prefix of ['/', '/barber-app/', '/cloudflare/']) {
+  test(`installed app opens from start_url and shortcuts, online and offline, at ${prefix}`, async ({ page, context }) => {
+    await page.goto(prefix);
+    await waitForWorker(page);
+    const urls = await launchURLs(page, prefix);
+    expect(urls.length).toBeGreaterThanOrEqual(5);
+    for (const offline of [false, true]) {
+      await context.setOffline(offline);
+      for (const url of urls) {
+        await page.goto(url);
+        await expect(page, `${url} offline=${offline}`).toHaveTitle(/Джентльмен/);
+        await expect(page.locator('#appbar-title')).toBeVisible();
+        await expect(page.locator('#view')).not.toBeEmpty();
+      }
+    }
+    await page.goto(urls.find((url) => url.includes('screen=bookings')));
+    await expect(page.locator('#appbar-title')).toContainText('Мои записи');
+  });
+}
+
+test('the service worker never stores a redirected copy of the app shell', async ({ page }) => {
+  await page.goto('/cloudflare/');
+  await waitForWorker(page);
+  const flags = await page.evaluate(async () => {
+    const [name] = (await caches.keys()).filter((key) => key.endsWith('-static'));
+    const cache = await caches.open(name);
+    const result = {};
+    for (const request of await cache.keys()) result[new URL(request.url).pathname] = (await cache.match(request)).redirected;
+    return result;
+  });
+  expect(Object.entries(flags).filter(([, redirected]) => redirected)).toEqual([]);
+  expect(Object.keys(flags)).toEqual(expect.arrayContaining(['/cloudflare/', '/cloudflare/index.html', '/cloudflare/js/app.js']));
+});
 
 test('stored legacy photo URLs are migrated without resetting data or custom photos', async ({ page }) => {
   await page.goto('/');
@@ -205,7 +256,7 @@ test('broken custom avatar reveals initials even after a re-render', async ({ pa
   await expect(page.locator('[data-act="salon-barber"]').first().locator('img')).toHaveCount(0);
 });
 
-for (const prefix of ['/', '/barber-app/']) {
+for (const prefix of ['/', '/barber-app/', '/cloudflare/']) {
   test(`Chromium reports no PWA installability errors at ${prefix}`, async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'CDP installability diagnostics are Chromium-only');
     await page.goto(prefix);

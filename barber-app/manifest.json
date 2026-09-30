@@ -2,7 +2,7 @@
   "name": "Джентльмен — барбершоп, онлайн-запись",
   "short_name": "Джентльмен",
   "description": "Онлайн-запись в мужскую парикмахерскую: выбор барбера, услуги, времени и оценка мастера.",
-  "start_url": "./index.html?src=pwa",
+  "start_url": "./?src=pwa",
   "scope": "./",
   "display": "standalone",
   "display_override": [
@@ -47,7 +47,7 @@
       "name": "Записаться к барберу",
       "short_name": "Запись",
       "description": "Открыть экран записи",
-      "url": "./index.html?screen=book",
+      "url": "./?screen=book",
       "icons": [
         {
           "src": "icons/icon-192.png",
@@ -60,7 +60,7 @@
       "name": "Мои записи",
       "short_name": "Записи",
       "description": "Активные записи и история визитов",
-      "url": "./index.html?screen=bookings",
+      "url": "./?screen=bookings",
       "icons": [
         {
           "src": "icons/icon-192.png",
